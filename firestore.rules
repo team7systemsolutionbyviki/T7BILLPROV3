@@ -1,0 +1,16 @@
+// T7 BILL PRO - Firestore Security Rules
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // mediflow_data stores app data documents & catalog
+    match /mediflow_data/{docId} {
+      allow read, write: if true;
+    }
+    
+    // waiter_orders stores individual order documents created from waiter mobile link
+    match /waiter_orders/{orderId} {
+      allow read, write: if true;
+    }
+  }
+}
+

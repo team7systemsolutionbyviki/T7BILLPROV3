@@ -1,0 +1,24 @@
+{
+  "name": "t7-bill-pro",
+  "version": "1.0.0",
+  "description": "",
+  "main": "script.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/team7systemsolutionbyviki/T7-BILL-PRO.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "bugs": {
+    "url": "https://github.com/team7systemsolutionbyviki/T7-BILL-PRO/issues"
+  },
+  "homepage": "https://github.com/team7systemsolutionbyviki/T7-BILL-PRO#readme",
+  "dependencies": {
+    "puppeteer": "^25.9.0"
+  }
+}
