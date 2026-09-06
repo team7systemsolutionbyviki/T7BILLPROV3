@@ -2,8 +2,9 @@
   "name": "t7-bill-pro",
   "version": "1.0.0",
   "description": "",
-  "main": "script.js",
+  "main": "server.js",
   "scripts": {
+    "start": "node server.js",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "repository": {
@@ -19,6 +20,11 @@
   },
   "homepage": "https://github.com/team7systemsolutionbyviki/T7-BILL-PRO#readme",
   "dependencies": {
-    "puppeteer": "^25.9.0"
+    "bcrypt": "^6.0.0",
+    "cors": "^2.8.5",
+    "express": "^4.19.2",
+    "puppeteer": "^25.9.0",
+    "sqlite3": "^5.1.7",
+    "ws": "^8.17.0"
   }
 }

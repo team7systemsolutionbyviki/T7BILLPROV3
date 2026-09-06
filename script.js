@@ -584,8 +584,19 @@ function initFirebase() {
 window.initApp = initApp;
 
 async function syncToCloud(collectionName, documentData) {
-    // Cloud sync has been explicitly disabled by user request to keep all data locally.
-    return;
+    // Repurposed to sync to Node.js Local Server
+    if (typeof isWaiterMobileMode !== 'undefined' && isWaiterMobileMode) return;
+    try {
+        const payload = {};
+        payload[collectionName] = documentData;
+        await fetch(`http://${window.location.hostname}:3000/api/sync/${collectionName}`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload)
+        });
+    } catch (e) {
+        console.error("Local Server Sync Error:", e);
+    }
 }
 
 function extractArrayData(cloudData) {
@@ -952,6 +963,35 @@ function initApp() {
             return;
         }
 
+        // PC Mode: Fetch Master Data from Node.js Local Server
+        fetch(`http://${window.location.hostname}:3000/api/sync/master`)
+            .then(res => res.json())
+            .then(data => {
+                if (data.products && data.products.length > 0) {
+                    localStorage.setItem(`mediflow_${currentBranchId || 'branch_default'}_products`, JSON.stringify(data.products));
+                    products = data.products;
+                }
+                if (data.tables && data.tables.length > 0) {
+                    localStorage.setItem(`mediflow_${currentBranchId || 'branch_default'}_tables`, JSON.stringify(data.tables));
+                    tableList = data.tables;
+                }
+                if (data.categories && data.categories.length > 0) {
+                    localStorage.setItem('mediflow_categories', JSON.stringify(data.categories.map(c => c.name)));
+                    categories = data.categories.map(c => c.name);
+                }
+                finalizeInitApp();
+            })
+            .catch(err => {
+                console.warn("Could not fetch master data from Local Server:", err);
+                finalizeInitApp();
+            });
+    } catch (error) {
+        console.error('App initialization error:', error);
+    }
+}
+
+function finalizeInitApp() {
+    try {
         // Data Migration: Ensure all sales have grandTotal (fix for legacy 'total' field)
         sales.forEach(s => {
             if (s.total !== undefined && s.grandTotal === undefined) {
@@ -1874,6 +1914,7 @@ function setupEventListeners() {
         }
 
         settings = {
+            esp32Ip: document.getElementById('set-esp32-ip') ? document.getElementById('set-esp32-ip').value.trim() : '',
             shopName: document.getElementById('set-shop-name').value,
             shopAddress: document.getElementById('set-shop-address').value,
             shopPhone: document.getElementById('set-shop-phone').value,
@@ -1896,6 +1937,16 @@ function setupEventListeners() {
             currency: document.getElementById('set-currency').value
         };
         localStorage.setItem('mediflow_settings', JSON.stringify(settings));
+        
+        // Notify Node.js Server about the new ESP32 IP
+        if (settings.esp32Ip && (typeof isWaiterMobileMode === 'undefined' || !isWaiterMobileMode)) {
+            fetch(`http://${window.location.hostname}:3000/api/settings/esp32`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ ip: settings.esp32Ip })
+            }).catch(e => console.error(e));
+        }
+
         alert('Settings saved successfully!');
         initApp(); // Refresh to apply changes
     });
@@ -3458,13 +3509,11 @@ async function processSale(shouldPrint, shouldWhatsApp = false) {
         localStorage.setItem(getPendingOrdersKey(), JSON.stringify(digitalOrders));
         if (typeof syncToCloud === 'function') syncToCloud('digital_orders', digitalOrders);
 
-        if (typeof isFirebaseEnabled !== 'undefined' && isFirebaseEnabled && db) {
-            try {
-                await db.collection('waiter_orders').doc(loadedDigitalOrderId).update({ status: 'Billed' });
-            } catch (err) {
-                console.error("Firebase update failed:", err);
-            }
+        // Send status to Waiters
+        if (window.waiterBridge && window.waiterBridge.isConnected) {
+            window.waiterBridge.sendStatusUpdate(loadedDigitalOrderId, 'Billed');
         }
+        
         loadedDigitalOrderId = null; // Clear global state
     }
 
@@ -7313,11 +7362,19 @@ function renderDigitalOrders() {
             `;
         }
 
-        const currentStatus = o.status || (o.paymentMode === 'Pending' ? 'Pending' : 'Billed');
-        const isPending = currentStatus === 'Pending';
-        const statusBadge = isPending 
-            ? `<span class="badge-stock badge-lowstock" style="font-size: 0.8rem; padding: 4px 10px;"><i data-lucide="clock" style="width: 12px; vertical-align: middle;"></i> Pending</span>`
-            : `<span class="badge-stock badge-instock" style="font-size: 0.8rem; padding: 4px 10px;"><i data-lucide="check-circle-2" style="width: 12px; vertical-align: middle;"></i> Billed</span>`;
+        const currentStatus = o.status || 'SENT';
+        
+        let statusColor = '#94a3b8'; // default SENT
+        let statusIcon = 'clock';
+        if (currentStatus === 'RECEIVED') { statusColor = '#3b82f6'; statusIcon = 'inbox'; }
+        else if (currentStatus === 'ACCEPTED') { statusColor = '#8b5cf6'; statusIcon = 'thumbs-up'; }
+        else if (currentStatus === 'PREPARING') { statusColor = '#f59e0b'; statusIcon = 'chef-hat'; }
+        else if (currentStatus === 'READY') { statusColor = '#10b981'; statusIcon = 'bell-ring'; }
+        else if (currentStatus === 'SERVED') { statusColor = '#06b6d4'; statusIcon = 'utensils'; }
+        else if (currentStatus === 'COMPLETED') { statusColor = '#22c55e'; statusIcon = 'check-circle-2'; }
+        else if (currentStatus === 'REJECTED' || currentStatus === 'CANCELLED') { statusColor = '#ef4444'; statusIcon = 'x-circle'; }
+
+        const statusBadge = `<span class="badge" style="background: ${statusColor}15; color: ${statusColor}; border: 1px solid ${statusColor}40; font-size: 0.8rem; padding: 4px 10px;"><i data-lucide="${statusIcon}" style="width: 12px; vertical-align: middle;"></i> ${currentStatus}</span>`;
 
         const waiterNameStr = o.waiterName || (o.customer && o.customer.phone && isNaN(o.customer.phone) ? o.customer.phone : '');
         const subInfoStr = waiterNameStr ? `👨‍🍳 Waiter: ${waiterNameStr}` : custPhone;
@@ -7330,20 +7387,25 @@ function renderDigitalOrders() {
                     <div style="font-weight: 600;">${custName}</div>
                     <div style="font-size: 0.8rem; color: var(--text-muted);">${subInfoStr}</div>
                 </td>
-                <td>${typeBadge}</td>
                 <td>${detailsHtml}</td>
                 <td><strong style="color: var(--primary-color);">${settings.currency}${(parseFloat(o.grandTotal) || 0).toFixed(2)}</strong></td>
                 <td>${statusBadge}</td>
                 <td style="text-align: right;">
-                    <div style="display: flex; gap: 6px; justify-content: flex-end;">
-                        <button type="button" class="btn btn-outline" onclick="printDigitalOrderKOT('${o.id}')" title="Print Kitchen / Bakery Order Ticket (KOT)" style="padding: 0.4rem 0.75rem; font-size: 0.82rem; color: #d97706; border-color: #f59e0b; background: #fffbe6;">
-                            <i data-lucide="printer" style="width: 15px;"></i> KOT Print
+                    <div style="display: flex; gap: 6px; justify-content: flex-end; align-items: center;">
+                        <select onchange="updateWaiterOrderStatus('${o.id || o.orderId}', this.value)" class="form-control" style="width: 110px; padding: 0.3rem; font-size: 0.8rem;">
+                            <option value="">Status...</option>
+                            <option value="ACCEPTED" ${currentStatus==='ACCEPTED'?'disabled':''}>Accept</option>
+                            <option value="PREPARING" ${currentStatus==='PREPARING'?'disabled':''}>Preparing</option>
+                            <option value="READY" ${currentStatus==='READY'?'disabled':''}>Ready</option>
+                            <option value="SERVED" ${currentStatus==='SERVED'?'disabled':''}>Served</option>
+                            <option value="COMPLETED" ${currentStatus==='COMPLETED'?'disabled':''}>Completed</option>
+                            <option value="REJECTED" ${currentStatus==='REJECTED'?'disabled':''}>Reject</option>
+                        </select>
+                        <button type="button" class="btn btn-outline" onclick="printDigitalOrderKOT('${o.id || o.orderId}')" title="Print KOT" style="padding: 0.4rem 0.6rem; color: #d97706; border-color: #f59e0b;">
+                            <i data-lucide="printer" style="width: 15px;"></i>
                         </button>
-                        <button type="button" class="btn btn-primary" onclick="loadDigitalOrderToBilling('${o.id}')" title="Load order items into Billing Terminal to Bill now" style="padding: 0.4rem 0.75rem; font-size: 0.82rem;">
-                            <i data-lucide="calculator" style="width: 15px;"></i> Bill Order
-                        </button>
-                        <button type="button" class="btn btn-outline" onclick="deleteDigitalOrder('${o.id}')" title="Delete Order" style="padding: 0.4rem 0.6rem; color: var(--danger-color);">
-                            <i data-lucide="trash-2" style="width: 15px;"></i>
+                        <button type="button" class="btn btn-primary" onclick="loadDigitalOrderToBilling('${o.id || o.orderId}')" title="Bill Order" style="padding: 0.4rem 0.6rem;">
+                            <i data-lucide="calculator" style="width: 15px;"></i>
                         </button>
                     </div>
                 </td>
@@ -7353,6 +7415,32 @@ function renderDigitalOrders() {
 
     tbody.innerHTML = html;
     lucide.createIcons();
+}
+
+function updateWaiterOrderStatus(orderId, status) {
+    if (!status) return;
+    
+    // Update local immediately for responsiveness
+    let digitalOrders = JSON.parse(localStorage.getItem(getPendingOrdersKey())) || [];
+    let idx = digitalOrders.findIndex(s => (s.id === orderId || s.orderId === orderId || s.invoiceNo === orderId));
+    if (idx !== -1) {
+        digitalOrders[idx].status = status;
+        localStorage.setItem(getPendingOrdersKey(), JSON.stringify(digitalOrders));
+        renderDigitalOrders();
+    }
+    
+    // Broadcast via PC WebSocket to Node.js server
+    if (window.waiterBridge && window.waiterBridge.ws && window.waiterBridge.ws.readyState === WebSocket.OPEN) {
+        window.waiterBridge.ws.send(JSON.stringify({ type: 'update_order_status', orderId: orderId, status: status }));
+    } else {
+        // Direct API call if PC is not connected via WebSocket (fallback)
+        const ip = localStorage.getItem('waiter_esp32_ip') || window.location.hostname;
+        fetch(`http://${ip}:3000/api/orders/status`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ orderId, status })
+        }).catch(err => console.error("Error updating status via API fallback:", err));
+    }
 }
 
 async function loadDigitalOrderToBilling(orderId) {
@@ -7505,8 +7593,9 @@ async function deleteDigitalOrder(orderId) {
 
         if (isFirebaseEnabled && db && (order.isWaiterOrder || String(orderId).startsWith('WORD-'))) {
             try {
-                await db.collection('waiter_orders').doc(orderId).update({ status: 'Cancelled' });
-                await db.collection('waiter_orders').doc(orderId).delete();
+            if (window.waiterBridge && window.waiterBridge.isConnected) {
+                window.waiterBridge.sendStatusUpdate(orderId, 'Cancelled');
+            }
             } catch (err) {
                 console.error("Firebase delete failed:", err);
                 alert("Cloud Sync Error: Could not delete order from cloud database. " + err.message);
@@ -8416,6 +8505,8 @@ function openStaffModal(staffId = null) {
             document.getElementById('edit-staff-id').value = staff.id;
             document.getElementById('staff-name').value = staff.name;
             document.getElementById('staff-phone').value = staff.phone || '';
+            document.getElementById('staff-username').value = staff.username || '';
+            document.getElementById('staff-password').value = ''; // Don't show existing password
             document.getElementById('staff-role').value = staff.role || 'Cashier';
             document.getElementById('staff-salary-type').value = staff.salaryType || 'Monthly';
             document.getElementById('staff-salary-rate').value = staff.salaryRate || 0;
@@ -8441,6 +8532,8 @@ function saveStaff(e) {
     const editId = document.getElementById('edit-staff-id').value;
     const name = document.getElementById('staff-name').value.trim();
     const phone = document.getElementById('staff-phone').value.trim();
+    const username = document.getElementById('staff-username').value.trim();
+    const password = document.getElementById('staff-password').value;
     const role = document.getElementById('staff-role').value;
     const salaryType = document.getElementById('staff-salary-type').value;
     const salaryRate = Number(document.getElementById('staff-salary-rate').value) || 0;
@@ -8451,11 +8544,12 @@ function saveStaff(e) {
     if (editId) {
         const index = staffList.findIndex(s => s.id === editId);
         if (index !== -1) {
-            staffList[index] = { ...staffList[index], name, phone, role, salaryType, salaryRate, joiningDate, status, address };
+            staffList[index] = { ...staffList[index], name, phone, username, role, salaryType, salaryRate, joiningDate, status, address };
+            if (password) staffList[index].password = password; // Only update password if provided
         }
     } else {
         const newId = 'STF' + String(staffList.length + 1).padStart(2, '0');
-        staffList.push({ id: newId, name, phone, role, salaryType, salaryRate, joiningDate, status, address });
+        staffList.push({ id: newId, name, phone, role, salaryType, salaryRate, joiningDate, status, address, username, password });
     }
 
     localStorage.setItem('mediflow_staff', JSON.stringify(staffList));
@@ -9212,6 +9306,7 @@ window.openBranchMenuLink = openBranchMenuLink;
 
 // --- KOT (Kitchen Order Ticket) Feature ---
 function loadSettingsFields() {
+    if (document.getElementById('set-esp32-ip')) document.getElementById('set-esp32-ip').value = settings.esp32Ip || '';
     if (document.getElementById('set-shop-name')) document.getElementById('set-shop-name').value = settings.shopName || '';
     if (document.getElementById('set-shop-address')) document.getElementById('set-shop-address').value = settings.shopAddress || '';
     if (document.getElementById('set-shop-phone')) document.getElementById('set-shop-phone').value = settings.shopPhone || '';
@@ -11680,81 +11775,7 @@ window.closeWaiterReviewModal = closeWaiterReviewModal;
 window.submitWaiterOrderToCloud = submitWaiterOrderToCloud;
 
 function setupWaiterOrdersListener() {
-    if (!isFirebaseEnabled || !db) return;
-    try {
-        let isInitialWaiterLoad = true;
-        if (unsubscribeWaiterOrdersListener) unsubscribeWaiterOrdersListener();
-        unsubscribeWaiterOrdersListener = db.collection('waiter_orders')
-            .where('branchId', '==', currentBranchId)
-            .onSnapshot(snapshot => {
-                let pendingKey = getPendingOrdersKey();
-                let digitalOrders = JSON.parse(localStorage.getItem(pendingKey)) || [];
-                let updated = false;
-
-                snapshot.docChanges().forEach(change => {
-                    const data = change.doc.data();
-                    const docId = change.doc.id;
-                    const statusStr = (data && data.status) ? String(data.status).toLowerCase() : '';
-                    
-                    if (change.type === 'added' || change.type === 'modified') {
-                        if (statusStr === 'pending') {
-                            let idx = digitalOrders.findIndex(s => s.id === docId || s.invoiceNo === docId);
-                            const orderRecord = {
-                                id: docId,
-                                invoiceNo: docId,
-                                date: data.createdAt || data.date || new Date().toISOString(),
-                                customer: data.customer || { name: 'Table ' + (data.tableNumber || '?'), phone: data.waiterName || '' },
-                                orderType: 'Dine-In',
-                                orderRef: data.orderRef || ('Table ' + (data.tableNumber || '?')),
-                                notes: data.notes || '',
-                                items: data.items || [],
-                                grandTotal: parseFloat(data.totalAmount || data.grandTotal) || 0,
-                                status: 'Pending',
-                                isDigitalOrder: true,
-                                isWaiterOrder: true,
-                                waiterName: data.waiterName || '',
-                                tableNumber: data.tableNumber || '',
-                                branchId: data.branchId
-                            };
-                            if (idx !== -1) {
-                                digitalOrders[idx] = orderRecord;
-                            } else {
-                                digitalOrders.unshift(orderRecord);
-                                if (!isInitialWaiterLoad) {
-                                    if (typeof playBeep === 'function') playBeep();
-                                    if (typeof showMenuToast === 'function') showMenuToast(`🔔 New Waiter Order from ${orderRecord.customer.name}!`);
-                                }
-                            }
-                            updated = true;
-                        } else {
-                            // If order is modified to Billed or Cancelled, remove the Pending entry
-                            const prevLength = digitalOrders.length;
-                            digitalOrders = digitalOrders.filter(s => s.id !== docId && s.invoiceNo !== docId);
-                            if (digitalOrders.length !== prevLength) {
-                                console.log(`Waiter order ${docId} removed because status changed to: ${statusStr}`);
-                                updated = true;
-                            }
-                        }
-                    } else if (change.type === 'removed') {
-                        const prevLength = digitalOrders.length;
-                        digitalOrders = digitalOrders.filter(s => s.id !== docId && s.invoiceNo !== docId);
-                        if (digitalOrders.length !== prevLength) {
-                            console.log(`Waiter order ${docId} removed because document was deleted from Firestore.`);
-                            updated = true;
-                        }
-                    }
-                });
-                if (updated) {
-                    localStorage.setItem(pendingKey, JSON.stringify(digitalOrders));
-                    if (typeof renderDigitalOrders === 'function') renderDigitalOrders();
-                }
-                isInitialWaiterLoad = false;
-            }, err => {
-                console.error("Waiter orders listener error:", err);
-            });
-    } catch (e) {
-        console.error("Error setting up waiter orders listener:", e);
-    }
+    return;
 }
 
 function openWaiterLinkModal() {
@@ -11775,8 +11796,8 @@ function openWaiterLinkModal() {
         });
         
         let html = '<option value="">-- All Waiters (Let them select) --</option>';
-        waiterNames.forEach(name => {
-            html += `<option value="${name.replace(/"/g, '&quot;')}">${name}</option>`;
+        waiters.forEach(s => {
+            html += `<option value="${(s.name||'').replace(/"/g, '&quot;')}">${s.name}</option>`;
         });
         select.innerHTML = html;
         select.value = '';
@@ -11813,16 +11834,6 @@ function closeWaiterLinkModal() {
     if (modal) modal.style.display = 'none';
 }
 
-function copyWaiterLink() {
-    const input = document.getElementById('waiter-link-input');
-    if (!input || !input.value) return;
-    navigator.clipboard.writeText(input.value).then(() => {
-        alert('📱 Waiter Order Link copied to clipboard!\n\n' + input.value);
-    }).catch(() => {
-        alert('Link: ' + input.value);
-    });
-}
-
 function initWaiterMobileMode() {
     console.log("Initializing Waiter Mobile Mode for branch:", currentBranchId);
     
@@ -11849,18 +11860,6 @@ function initWaiterMobileMode() {
     populateWaiterPickers();
     renderWaiterCategories();
     renderWaiterMenu();
-
-    // If cloud enabled, sync fresh branch data from Firestore
-    if (isFirebaseEnabled && db && typeof syncFromCloud === 'function') {
-        syncFromCloud().then(() => {
-            if (typeof loadBranchData === 'function') loadBranchData();
-            populateWaiterPickers();
-            renderWaiterCategories();
-            renderWaiterMenu();
-        }).catch(e => {
-            console.warn("Cloud sync error in waiter mode:", e);
-        });
-    }
 
     // Finish boot loader if present
     if (typeof window.finishAppBootLoader === 'function') window.finishAppBootLoader();
@@ -11991,39 +11990,83 @@ function populateWaiterPickers() {
     }
 }
 
-function startWaiterOrderSession() {
-    const waiterSel = document.getElementById('wm-waiter-select');
-    const waiterCustom = document.getElementById('wm-waiter-custom');
-    const tableSel = document.getElementById('wm-table-select');
-    const tableCustom = document.getElementById('wm-table-custom');
+// Waiter Login 
+async function startWaiterOrderSession() {
+    const username = document.getElementById('wm-login-username').value.trim();
+    const password = document.getElementById('wm-login-password').value;
+    const tableId = document.getElementById('wm-table-select').value;
+    const tableCustom = document.getElementById('wm-table-custom').value.trim();
 
-    let wName = selectedWaiterChipVal || (waiterSel ? waiterSel.value : '');
-    if (wName === 'OTHER' && waiterCustom) wName = waiterCustom.value.trim();
+    if (!username || !password) {
+        alert("Please enter both Username and Password.");
+        return;
+    }
+
+    if (!tableId && !tableCustom) {
+        alert("Please select or enter a table.");
+        return;
+    }
+
+    const tableStr = tableId === 'custom' ? tableCustom : tableId;
     
-    let tNum = selectedTableChipVal || (tableSel ? tableSel.value : '');
-    if (tNum === 'OTHER' && tableCustom) tNum = tableCustom.value.trim();
-
-    if (!wName) {
-        alert('Please select or enter a Waiter Name!');
-        return;
-    }
-    if (!tNum) {
-        alert('Please select or enter a Table Number!');
-        return;
+    const btn = document.querySelector('#waiter-picker-step .btn');
+    if (btn) {
+        btn.innerHTML = 'Authenticating...';
+        btn.disabled = true;
     }
 
-    currentWaiterName = wName;
-    currentWaiterTable = tNum;
-
-    const sessionInfo = document.getElementById('wm-session-info');
-    if (sessionInfo) sessionInfo.textContent = `${tNum} • Waiter: ${wName}`;
-
-    document.getElementById('waiter-picker-step').style.display = 'none';
-    document.getElementById('waiter-menu-step').style.display = 'block';
-    document.getElementById('wm-bottom-bar').style.display = 'block';
-
-    renderWaiterCategories();
-    renderWaiterMenu();
+    try {
+        const response = await fetch(`http://${window.location.hostname}:3000/api/login`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ username, password })
+        });
+        
+        const data = await response.json();
+        if (data.success) {
+            currentWaiterName = data.user.name;
+            currentWaiterTable = tableStr;
+            
+            document.getElementById('wm-session-info').textContent = `${tableStr} | Waiter: ${currentWaiterName}`;
+            
+            document.getElementById('waiter-picker-step').style.display = 'none';
+            document.getElementById('waiter-menu-step').style.display = 'block';
+            const bottomBar = document.getElementById('wm-bottom-bar');
+            if (bottomBar) bottomBar.style.display = 'block';
+            
+            renderWaiterCategories();
+            renderWaiterMenu();
+        } else {
+            alert("Login Failed: " + (data.error || "Invalid credentials"));
+        }
+    } catch (e) {
+        console.error("Login API error:", e);
+        // Fallback to local offline login validation if server is down (basic check)
+        let localStaff = JSON.parse(localStorage.getItem('mediflow_staff')) || [];
+        let offlineMatch = localStaff.find(s => s.username === username);
+        if (offlineMatch) {
+            currentWaiterName = offlineMatch.name;
+            currentWaiterTable = tableStr;
+            
+            document.getElementById('wm-session-info').textContent = `${tableStr} | Waiter: ${currentWaiterName}`;
+            
+            document.getElementById('waiter-picker-step').style.display = 'none';
+            document.getElementById('waiter-menu-step').style.display = 'block';
+            const bottomBar = document.getElementById('wm-bottom-bar');
+            if (bottomBar) bottomBar.style.display = 'block';
+            
+            renderWaiterCategories();
+            renderWaiterMenu();
+        } else {
+            alert("Cannot connect to local server to authenticate, and username not found in offline cache.");
+        }
+    } finally {
+        if (btn) {
+            btn.innerHTML = '🚀 Start Order Session <i data-lucide="arrow-right"></i>';
+            btn.disabled = false;
+            lucide.createIcons();
+        }
+    }
 }
 
 function showWaiterPickerStep() {
@@ -12443,7 +12486,10 @@ async function submitWaiterOrderToCloud() {
     };
 
     try {
-        if (isFirebaseEnabled && db) {
+        if (window.waiterBridge && window.waiterBridge.isConnected) {
+            // Send via WebSocket
+            window.waiterBridge.sendOrder(orderData);
+        } else if (isFirebaseEnabled && db) {
             // Send to Firebase asynchronously in the background so it doesn't block the Waiter UI
             db.collection('waiter_orders').doc(orderId).set(orderData).catch(err => {
                 console.error("Firebase background sync failed:", err);
@@ -12476,4 +12522,146 @@ async function submitWaiterOrderToCloud() {
         }
     }
 }
+// --- Waiter Server Bridge (Local Node.js WebSocket) ---
+class WaiterServerBridge {
+    constructor() {
+        this.ws = null;
+        this.isConnected = false;
+        this.reconnectTimer = null;
+    }
 
+    init() {
+        this.connect();
+    }
+
+    connect() {
+        if (this.ws) {
+            this.ws.close();
+        }
+        
+        const wsUrl = `ws://${window.location.hostname}:3001`; // Connect directly to Node.js
+        console.log("Connecting to WebSocket:", wsUrl);
+        
+        try {
+            this.ws = new WebSocket(wsUrl);
+            
+            this.ws.onopen = () => {
+                console.log("WebSocket Connected");
+                this.isConnected = true;
+                
+                // If we are a waiter app, request sync data from the PC
+                if (typeof isWaiterMobileMode !== 'undefined' && isWaiterMobileMode) {
+                    this.ws.send(JSON.stringify({ type: 'sync_request' }));
+                }
+            };
+            
+            this.ws.onmessage = (event) => {
+                try {
+                    const msg = JSON.parse(event.data);
+                    this.handleMessage(msg);
+                } catch (e) {
+                    console.log("Error parsing WS message:", e);
+                }
+            };
+            
+            this.ws.onclose = () => {
+                console.log("WebSocket Disconnected");
+                this.isConnected = false;
+                
+                // Auto reconnect
+                clearTimeout(this.reconnectTimer);
+                this.reconnectTimer = setTimeout(() => this.connect(), 5000);
+            };
+            
+            this.ws.onerror = (err) => {
+                console.error("WebSocket Error:", err);
+            };
+        } catch (e) {
+            console.error("Error creating WebSocket:", e);
+        }
+    }
+
+    handleMessage(msg) {
+        if (!msg || !msg.type) return;
+
+        // PC Logic: Handle validated orders from Node.js
+        if (msg.type === 'new_order_validated' && (!window.isWaiterMobileMode || typeof isWaiterMobileMode === 'undefined')) {
+            const orderData = msg.data;
+            if (!orderData) return;
+
+            let pendingKey = getPendingOrdersKey();
+            let digitalOrders = JSON.parse(localStorage.getItem(pendingKey)) || [];
+            let idx = digitalOrders.findIndex(s => s.id === orderData.id || s.orderId === orderData.id || s.invoiceNo === orderData.id);
+            
+            if (idx === -1) {
+                digitalOrders.unshift(orderData);
+            } else {
+                digitalOrders[idx] = orderData; // Update existing
+            }
+            
+            localStorage.setItem(pendingKey, JSON.stringify(digitalOrders));
+            
+            if (typeof renderDigitalOrders === 'function') renderDigitalOrders();
+            if (typeof playBeep === 'function' && idx === -1) playBeep();
+            if (typeof showMenuToast === 'function' && idx === -1) showMenuToast(`🔔 New Waiter Order from ${orderData.customerName || orderData.customer?.name}!`);
+        }
+        
+        // Waiter & PC Logic: Handle status updates
+        if (msg.type === 'order_status') {
+            if (typeof isWaiterMobileMode !== 'undefined' && isWaiterMobileMode) {
+                if (typeof showMenuToast === 'function') {
+                    showMenuToast(`ℹ️ Order #${msg.orderId} is now ${msg.status}`);
+                }
+            } else {
+                // PC Logic Update UI
+                let pendingKey = getPendingOrdersKey();
+                let digitalOrders = JSON.parse(localStorage.getItem(pendingKey)) || [];
+                let idx = digitalOrders.findIndex(s => s.id === msg.orderId || s.orderId === msg.orderId || s.invoiceNo === msg.orderId);
+                if (idx !== -1) {
+                    digitalOrders[idx].status = msg.status;
+                    localStorage.setItem(pendingKey, JSON.stringify(digitalOrders));
+                    if (typeof renderDigitalOrders === 'function') renderDigitalOrders();
+                }
+            }
+        }
+
+        // PC Logic: Reload data when Node.js says it's updated
+        if (msg.type === 'master_data_updated' && (!window.isWaiterMobileMode || typeof isWaiterMobileMode === 'undefined')) {
+            console.log("Master data updated by Node.js, reloading...");
+        }
+
+        // Waiter Logic: Receive sync data from PC
+        if (msg.type === 'sync_data' && typeof isWaiterMobileMode !== 'undefined' && isWaiterMobileMode) {
+            const branchIdStr = currentBranchId || 'branch_default';
+            localStorage.setItem(`mediflow_${branchIdStr}_products`, JSON.stringify(msg.products || []));
+            localStorage.setItem(`mediflow_${branchIdStr}_categories`, JSON.stringify(msg.categories || []));
+            localStorage.setItem(`mediflow_${branchIdStr}_tables`, JSON.stringify(msg.tables || []));
+            
+            if (typeof loadBranchData === 'function') loadBranchData();
+            if (typeof populateWaiterPickers === 'function') populateWaiterPickers();
+            if (typeof renderWaiterCategories === 'function') renderWaiterCategories();
+            if (typeof renderWaiterMenu === 'function') renderWaiterMenu();
+            
+            if (typeof showMenuToast === 'function') showMenuToast(`✅ Menu Sync Complete!`);
+        }
+    }
+
+    sendOrder(orderData) {
+        if (this.isConnected && this.ws) {
+            this.ws.send(JSON.stringify({ type: 'new_order', data: orderData }));
+        }
+    }
+
+    sendStatusUpdate(orderId, status) {
+        if (this.isConnected && this.ws) {
+            this.ws.send(JSON.stringify({ type: 'order_status', orderId: orderId, status: status }));
+        }
+    }
+}
+
+window.waiterBridge = new WaiterServerBridge();
+
+// Initialize bridge after short delay to ensure settings are loaded
+setTimeout(() => {
+    window.waiterBridge.init();
+}, 2000);

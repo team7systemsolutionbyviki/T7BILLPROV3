@@ -1,0 +1,21 @@
+T7 BILL PRO LOCAL WI-FI SETUP
+=============================
+
+1. Connect the billing PC to the shop Wi-Fi.
+2. Start T7 BILL PRO.
+3. Start the local server by double-clicking `start-server.bat`.
+4. The server will open a terminal and display the PC IP address (e.g., http://192.168.1.100:3000).
+5. Connect waiter phones/tablets to the SAME Wi-Fi network.
+6. On each phone, open the browser and navigate to the Waiter URL shown in the terminal (e.g., http://192.168.1.100:3000/?mode=waiter).
+7. Login using the waiter account (Username and Password) created by the Admin in the PC Staff Management section.
+8. Select a table and take orders.
+9. Send order.
+10. The Billing PC will receive the order automatically under "Live Waiter Orders".
+11. The Admin/Cashier can ACCEPT, PREPARE, and bill the order.
+12. The Waiter phone will receive live status updates.
+
+IMPORTANT NOTES:
+- Windows Firewall MUST allow TCP Port 3000. If phones cannot connect, open Windows Defender Firewall, go to Advanced Settings, and create an Inbound Rule for Port 3000 (TCP).
+- If the phone cannot connect, verify both devices are on the exact same Wi-Fi.
+- If the internet goes down, the system WILL STILL WORK as long as the router stays powered on and provides local Wi-Fi.
+- To restart the server, close the black terminal window and run `start-server.bat` again.
