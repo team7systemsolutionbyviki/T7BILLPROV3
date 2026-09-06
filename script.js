@@ -3648,7 +3648,7 @@ function printBill(sale) {
 
     const triggerPrint = () => {
         const isPreviewMode = (settings.printMode || 'preview') === 'preview';
-        if (isPreviewMode) {
+        if (isPreviewMode && typeof openPrintPreviewModal === 'function') {
             openPrintPreviewModal(bill.innerHTML, executePrint);
         } else {
             executePrint();
@@ -9389,7 +9389,13 @@ function openPrintPreviewModal(billHtml, printCallback) {
     const modal = document.getElementById('modal-print-preview');
     const container = document.getElementById('print-preview-container');
     if (container) container.innerHTML = billHtml;
-    if (modal) modal.style.display = 'flex';
+    if (modal) {
+        modal.style.display = 'flex';
+    } else {
+        // Fallback: If modal HTML is missing, just print directly
+        console.warn("Print preview modal missing from HTML. Printing directly.");
+        if (typeof printCallback === 'function') printCallback();
+    }
 }
 
 function closePrintPreviewModal() {
